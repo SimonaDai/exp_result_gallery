@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>实验结果图看板</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="bg-shape shape-a"></div>
+    <div class="bg-shape shape-b"></div>
+
+    <header class="topbar">
+      <div>
+        <h1>实验结果对比看板</h1>
+        <p class="muted">同一页面多开子视图，对比不同实验子文件夹结果。</p>
+      </div>
+      <div class="top-actions">
+        <button id="changeRootBtn" class="btn ghost">根目录后端固定</button>
+        <button id="refreshFoldersBtn" class="btn ghost">刷新目录</button>
+        <button id="addViewBtn" class="btn primary">新增对比视图</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel sidebar">
+        <div class="label">当前根目录</div>
+        <div id="rootText" class="root-text">-</div>
+        <div class="split"></div>
+        <label class="inline-check">
+          <input id="recursiveToggle" type="checkbox" checked />
+          <span>递归显示多层子目录</span>
+        </label>
+        <div class="folder-head">
+          <span>子文件夹列表</span>
+          <span id="folderCountTag" class="tag">0</span>
+        </div>
+        <div class="tree-actions">
+          <button id="expandAllBtn" class="btn ghost small-btn">全部展开</button>
+          <button id="collapseAllBtn" class="btn ghost small-btn">全部折叠</button>
+        </div>
+        <div id="folderTree" class="folder-tree"></div>
+      </aside>
+
+      <section class="panel content">
+        <div id="statusText" class="status">初始化中...</div>
+        <div id="viewsWrap" class="views-wrap"></div>
+      </section>
+    </main>
+
+    <div id="imageModal" class="modal hidden dark">
+      <div class="image-modal-head">
+        <span id="imageModalTitle">预览图</span>
+        <button id="closeImageModalBtn" class="btn ghost">关闭</button>
+      </div>
+      <div class="image-modal-body">
+        <button id="previewPrevBtn" class="image-nav-btn left" aria-label="上一张">◀</button>
+        <img id="fullImage" src="" alt="full image" />
+        <button id="previewNextBtn" class="image-nav-btn right" aria-label="下一张">▶</button>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
