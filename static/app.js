@@ -2,6 +2,7 @@ const rootText = document.getElementById("rootText");
 const changeRootBtn = document.getElementById("changeRootBtn");
 const refreshFoldersBtn = document.getElementById("refreshFoldersBtn");
 const addViewBtn = document.getElementById("addViewBtn");
+const addCompareViewBtn = document.getElementById("addCompareViewBtn");
 const recursiveToggle = document.getElementById("recursiveToggle");
 const expandAllBtn = document.getElementById("expandAllBtn");
 const collapseAllBtn = document.getElementById("collapseAllBtn");
@@ -27,8 +28,13 @@ const state = {
   recursive: true,
   expandedPaths: new Set(),
   viewItems: new Map(),
+  compareLabels: {
+    source: "退化",
+    result: "复原",
+  },
   preview: {
     viewId: "",
+    mode: "single",
     folder: "",
     page: 1,
     limit: 1,
@@ -36,6 +42,7 @@ const state = {
     total: 0,
     items: [],
     index: 0,
+    slot: "single",
   },
 };
 
@@ -48,6 +55,23 @@ function clampCount(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 2;
   return Math.max(1, Math.min(200, Math.trunc(n)));
+}
+
+function getCompareFolderOptions() {
+  return state.folders.map((folder) => ({ value: folder, label: folder }));
+}
+
+function getCurrentFolderForNewView() {
+  const activeView = getViewById(state.activeViewId);
+  if (activeView?.folder) {
+    return activeView.folder;
+  }
+  return state.folders[0] || "";
+}
+
+function createCompareView(initialFolder = "") {
+  const folder = initialFolder || getCurrentFolderForNewView();
+  createView(folder, "compare");
 }
 
 function openImageModal() {
@@ -79,6 +103,14 @@ async function apiGetImages(folder, limit, page) {
   const res = await fetch(url);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "读取图片失败");
+  return data;
+}
+
+async function apiGetPairedImages(folder, limit, page) {
+  const url = `/api/paired-images?folder=${encodeURIComponent(folder)}&limit=${limit}&page=${page}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "读取对照图片失败");
   return data;
 }
 
@@ -127,16 +159,17 @@ function buildTree(paths) {
   return root;
 }
 
-function createView(initialFolder = "") {
+function createView(initialFolder = "", mode = "single") {
   if (!state.folders.length) return;
   if (state.views.length >= MAX_VIEWS) {
     setStatus(`最多支持 ${MAX_VIEWS} 个对比视图。`, true);
     return;
   }
 
-  const folder = initialFolder || state.folders[0];
+  const folder = initialFolder || state.folders[0] || "";
   const view = {
     id: `view_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
+    mode,
     folder,
     limit: 2,
     page: 1,
@@ -145,7 +178,7 @@ function createView(initialFolder = "") {
   };
   state.views.push(view);
   state.activeViewId = view.id;
-  ensureExpandedForPath(folder);
+  if (folder) ensureExpandedForPath(folder);
 
   renderFolderTree();
   renderViews();
@@ -188,8 +221,20 @@ function updateViewFolder(viewId, folderName) {
   if (!view) return;
   view.folder = folderName;
   view.page = 1;
-  ensureExpandedForPath(folderName);
+  if (view.folder) ensureExpandedForPath(view.folder);
   renderFolderTree();
+  syncViewControl(viewId);
+  loadViewImages(viewId);
+}
+
+function updateViewMode(viewId, mode) {
+  const view = getViewById(viewId);
+  if (!view) return;
+  view.mode = mode === "compare" ? "compare" : "single";
+  if (!state.folders.includes(view.folder)) {
+    view.folder = state.folders[0] || "";
+  }
+  view.page = 1;
   syncViewControl(viewId);
   loadViewImages(viewId);
 }
@@ -204,12 +249,14 @@ function syncViewControl(viewId) {
   const view = getViewById(viewId);
   if (!view) return;
 
+  const modeSelect = document.getElementById(`modeSelect_${viewId}`);
   const folderSelect = document.getElementById(`folderSelect_${viewId}`);
   const countInput = document.getElementById(`countInput_${viewId}`);
   const pageInfo = document.getElementById(`pageInfo_${viewId}`);
   const prevBtn = document.getElementById(`prevPage_${viewId}`);
   const nextBtn = document.getElementById(`nextPage_${viewId}`);
 
+  if (modeSelect) modeSelect.value = view.mode;
   if (folderSelect) folderSelect.value = view.folder;
   if (countInput) countInput.value = String(view.limit);
   if (pageInfo) pageInfo.textContent = `第 ${view.page}/${view.totalPages} 页`;
@@ -303,26 +350,31 @@ function getGridCols(count) {
   return 4;
 }
 
-function openPreview(viewId, index) {
+function openPreview(viewId, index, slot = "single") {
   const view = getViewById(viewId);
   if (!view) return;
-  const currentItems = state.viewItems.get(viewId) || [];
+  const currentData = state.viewItems.get(viewId) || { mode: "single", items: [] };
   state.preview.viewId = viewId;
+  state.preview.mode = currentData.mode || "single";
   state.preview.folder = view.folder;
   state.preview.page = view.page;
   state.preview.limit = view.limit;
   state.preview.totalPages = view.totalPages;
   state.preview.total = view.total;
-  state.preview.items = currentItems;
+  state.preview.items = currentData.items || [];
   state.preview.index = index;
+  state.preview.slot = slot;
   openImageModal();
   refreshPreview();
 }
 
 async function loadPreviewPage(page, keepIndex = 0) {
-  const { folder, limit } = state.preview;
-  if (!folder) return;
-  const data = await apiGetImages(folder, limit, page);
+  const { folder, limit, mode } = state.preview;
+  if (mode !== "compare" && !folder) return;
+  const data =
+    mode === "compare"
+      ? await apiGetPairedImages(folder, limit, page)
+      : await apiGetImages(folder, limit, page);
   state.preview.page = data.page || page;
   state.preview.totalPages = data.total_pages || 1;
   state.preview.total = data.total || 0;
@@ -369,13 +421,78 @@ function refreshPreview() {
   state.preview.index = idx;
   const item = items[idx];
   const globalIndex = (state.preview.page - 1) * state.preview.limit + idx + 1;
+  const currentPreviewItem =
+    state.preview.mode === "compare"
+      ? state.preview.slot === "source"
+        ? item.source
+        : item.result
+      : item;
 
-  fullImage.src = item.url;
-  fullImage.alt = item.name;
-  imageModalTitle.textContent = `${item.name} (${globalIndex}/${state.preview.total || items.length})`;
+  fullImage.src = currentPreviewItem.url;
+  fullImage.alt = currentPreviewItem.name;
+  imageModalTitle.textContent =
+    state.preview.mode === "compare"
+      ? `${item.name} | ${state.preview.slot === "source" ? state.compareLabels.source : state.compareLabels.result} (${globalIndex}/${state.preview.total || items.length})`
+      : `${item.name} (${globalIndex}/${state.preview.total || items.length})`;
   previewPrevBtn.disabled = state.preview.page === 1 && idx === 0;
   previewNextBtn.disabled =
     state.preview.page === state.preview.totalPages && idx === items.length - 1;
+}
+
+function createImageCard(item, onPreview, tone = "") {
+  const card = document.createElement("article");
+  card.className = `img-card ${tone}`.trim();
+
+  const img = document.createElement("img");
+  img.src = item.url;
+  img.alt = item.name;
+  img.loading = "lazy";
+  img.ondblclick = onPreview;
+
+  const caption = document.createElement("div");
+  caption.className = "img-name";
+  caption.title = item.name;
+  caption.textContent = item.name;
+
+  card.append(img, caption);
+  return card;
+}
+
+function renderPairedImagesToGrid(viewId, items) {
+  const view = getViewById(viewId);
+  const grid = document.getElementById(`grid_${viewId}`);
+  if (!grid || !view) return;
+
+  const cols = Math.max(1, items.length);
+  grid.className = "view-body paired-view-body";
+  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  grid.classList.toggle("grid-large", cols <= 3);
+
+  if (!items.length) {
+    grid.innerHTML = `<div class="muted">两个目录中没有找到同名图片。</div>`;
+    return;
+  }
+
+  grid.innerHTML = "";
+
+  const legend = document.createElement("div");
+  legend.className = "paired-legend";
+  legend.innerHTML = `
+    <span class="paired-legend-chip source">第 1 行：${state.compareLabels.source}</span>
+    <span class="paired-legend-chip result">第 2 行：${state.compareLabels.result}</span>
+  `;
+  grid.appendChild(legend);
+
+  items.forEach((item, index) => {
+    grid.appendChild(
+      createImageCard(item.source, () => openPreview(viewId, index, "source"), "source-card")
+    );
+  });
+  items.forEach((item, index) => {
+    grid.appendChild(
+      createImageCard(item.result, () => openPreview(viewId, index, "result"), "result-card")
+    );
+  });
 }
 
 function renderImagesToGrid(viewId, items) {
@@ -383,10 +500,16 @@ function renderImagesToGrid(viewId, items) {
   const grid = document.getElementById(`grid_${viewId}`);
   if (!grid || !view) return;
 
-  state.viewItems.set(viewId, items);
+  state.viewItems.set(viewId, { mode: view.mode, items });
+
+  if (view.mode === "compare") {
+    renderPairedImagesToGrid(viewId, items);
+    return;
+  }
 
   const cols = getGridCols(view.limit);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  grid.className = "view-body";
   grid.classList.toggle("grid-large", view.limit <= 3);
 
   if (!items.length) {
@@ -396,21 +519,7 @@ function renderImagesToGrid(viewId, items) {
 
   grid.innerHTML = "";
   items.forEach((item, index) => {
-    const card = document.createElement("article");
-    card.className = "img-card";
-
-    const img = document.createElement("img");
-    img.src = item.url;
-    img.alt = item.name;
-    img.loading = "lazy";
-    img.ondblclick = () => openPreview(viewId, index);
-
-    const caption = document.createElement("div");
-    caption.className = "img-name";
-    caption.title = item.name;
-    caption.textContent = item.name;
-
-    card.append(img, caption);
+    const card = createImageCard(item, () => openPreview(viewId, index));
     grid.appendChild(card);
   });
 }
@@ -430,14 +539,34 @@ function renderViewCard(view) {
   const actions = document.createElement("div");
   actions.className = "view-actions";
 
+  const modeSelect = document.createElement("select");
+  modeSelect.className = "small-select mode-select";
+  modeSelect.id = `modeSelect_${view.id}`;
+  [
+    { value: "single", label: "单目录" },
+    { value: "compare", label: "双行对照" },
+  ].forEach((item) => {
+    const op = document.createElement("option");
+    op.value = item.value;
+    op.textContent = item.label;
+    if (item.value === view.mode) op.selected = true;
+    modeSelect.appendChild(op);
+  });
+  modeSelect.onchange = (e) => updateViewMode(view.id, e.target.value);
+
   const folderSelect = document.createElement("select");
   folderSelect.className = "small-select";
   folderSelect.id = `folderSelect_${view.id}`;
-  state.folders.forEach((f) => {
+  folderSelect.title = view.mode === "compare" ? "双行对照子目录" : "普通目录";
+  const folderOptions =
+    view.mode === "compare"
+      ? getCompareFolderOptions()
+      : state.folders.map((folder) => ({ value: folder, label: folder }));
+  folderOptions.forEach(({ value, label }) => {
     const op = document.createElement("option");
-    op.value = f;
-    op.textContent = f;
-    if (f === view.folder) op.selected = true;
+    op.value = value;
+    op.textContent = label;
+    if (value === view.folder) op.selected = true;
     folderSelect.appendChild(op);
   });
   folderSelect.onchange = (e) => updateViewFolder(view.id, e.target.value);
@@ -502,6 +631,7 @@ function renderViewCard(view) {
   closeBtn.onclick = () => removeView(view.id);
 
   actions.append(
+    modeSelect,
     folderSelect,
     countInput,
     prevPageBtn,
@@ -525,7 +655,7 @@ function renderViewCard(view) {
 function renderViews() {
   viewsWrap.innerHTML = "";
   if (!state.views.length) {
-    viewsWrap.innerHTML = `<div class="muted">暂无视图，点击“新增对比视图”。</div>`;
+    viewsWrap.innerHTML = `<div class="muted">暂无视图，点击“新增对比视图”或“新增双行对照视图”。</div>`;
     return;
   }
 
@@ -538,25 +668,35 @@ function renderViews() {
 
 async function loadViewImages(viewId) {
   const view = getViewById(viewId);
-  if (!view || !state.root || !view.folder) return;
+  if (!view || !state.root) return;
+  if (view.mode !== "compare" && !view.folder) return;
 
   view.limit = clampCount(view.limit);
   const grid = document.getElementById(`grid_${viewId}`);
   if (grid) grid.innerHTML = `<div class="muted">正在加载图片...</div>`;
 
   try {
-    const data = await apiGetImages(view.folder, view.limit, view.page);
+    const data =
+      view.mode === "compare"
+        ? await apiGetPairedImages(view.folder, view.limit, view.page)
+        : await apiGetImages(view.folder, view.limit, view.page);
     view.page = data.page || 1;
     view.totalPages = data.total_pages || 1;
     view.total = data.total || 0;
+    if (view.mode === "compare") {
+      state.compareLabels.source = data.source_label || state.compareLabels.source;
+      state.compareLabels.result = data.result_label || state.compareLabels.result;
+    }
     syncViewControl(view.id);
     renderImagesToGrid(view.id, data.items || []);
     setStatus(
-      `目录 ${view.folder}：第 ${view.page}/${view.totalPages} 页，共 ${view.total} 张图。`
+      view.mode === "compare"
+        ? `对照目录 ${view.folder}：第 ${view.page}/${view.totalPages} 页，共匹配 ${view.total} 组图片。`
+        : `目录 ${view.folder}：第 ${view.page}/${view.totalPages} 页，共 ${view.total} 张图。`
     );
   } catch (err) {
     if (grid) grid.innerHTML = "";
-    setStatus(err.message, true);
+    setStatus(err.message || "加载图片失败", true);
   }
 }
 
@@ -580,12 +720,14 @@ async function loadFolders() {
     }
 
     if (!state.views.length) {
-      createView(state.folders[0]);
+      createView(state.folders[0], "single");
     } else {
       state.views.forEach((view) => {
         if (!state.folders.includes(view.folder)) {
-          view.folder = state.folders[0];
+          view.folder = state.folders[0] || "";
           view.page = 1;
+        }
+        if (view.folder) {
           ensureExpandedForPath(view.folder);
         }
       });
@@ -603,6 +745,8 @@ async function init() {
   try {
     const config = await apiGetConfig();
     state.root = config.default_root || "";
+    state.compareLabels.source = config.paired_source_label || state.compareLabels.source;
+    state.compareLabels.result = config.paired_result_label || state.compareLabels.result;
     if (!state.root) {
       setStatus("后端未配置默认根目录。", true);
       return;
@@ -620,7 +764,8 @@ async function init() {
 changeRootBtn.onclick = () =>
   setStatus("根目录由后端启动时指定，请修改环境变量 EXP_RESULTS_ROOT 后重启服务。");
 refreshFoldersBtn.onclick = loadFolders;
-addViewBtn.onclick = () => createView(state.folders[0] || "");
+addViewBtn.onclick = () => createView(getCurrentFolderForNewView(), "single");
+addCompareViewBtn.onclick = () => createCompareView(getCurrentFolderForNewView());
 recursiveToggle.onchange = () => {
   state.recursive = Boolean(recursiveToggle.checked);
   loadFolders();
