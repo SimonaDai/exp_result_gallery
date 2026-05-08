@@ -29,13 +29,15 @@ const state = {
   expandedPaths: new Set(),
   viewItems: new Map(),
   compareLabels: {
-    source: "退化",
-    result: "复原",
+    source: "目录A",
+    result: "目录B",
   },
   preview: {
     viewId: "",
     mode: "single",
     folder: "",
+    folderA: "",
+    folderB: "",
     page: 1,
     limit: 1,
     totalPages: 1,
@@ -63,6 +65,9 @@ function getCompareFolderOptions() {
 
 function getCurrentFolderForNewView() {
   const activeView = getViewById(state.activeViewId);
+  if (activeView?.mode === "compare" && activeView?.folderA) {
+    return activeView.folderA;
+  }
   if (activeView?.folder) {
     return activeView.folder;
   }
@@ -70,8 +75,10 @@ function getCurrentFolderForNewView() {
 }
 
 function createCompareView(initialFolder = "") {
-  const folder = initialFolder || getCurrentFolderForNewView();
-  createView(folder, "compare");
+  const folderA = initialFolder || getCurrentFolderForNewView();
+  const fallback = state.folders[0] || "";
+  const folderB = state.folders.find((folder) => folder !== folderA) || folderA || fallback;
+  createView(folderA, "compare", folderB);
 }
 
 function openImageModal() {
@@ -106,8 +113,8 @@ async function apiGetImages(folder, limit, page) {
   return data;
 }
 
-async function apiGetPairedImages(folder, limit, page) {
-  const url = `/api/paired-images?folder=${encodeURIComponent(folder)}&limit=${limit}&page=${page}`;
+async function apiGetPairedImages(folderA, folderB, limit, page) {
+  const url = `/api/paired-images?folder_a=${encodeURIComponent(folderA)}&folder_b=${encodeURIComponent(folderB)}&limit=${limit}&page=${page}`;
   const res = await fetch(url);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "读取对照图片失败");
@@ -159,7 +166,7 @@ function buildTree(paths) {
   return root;
 }
 
-function createView(initialFolder = "", mode = "single") {
+function createView(initialFolder = "", mode = "single", initialFolderB = "") {
   if (!state.folders.length) return;
   if (state.views.length >= MAX_VIEWS) {
     setStatus(`最多支持 ${MAX_VIEWS} 个对比视图。`, true);
@@ -171,6 +178,8 @@ function createView(initialFolder = "", mode = "single") {
     id: `view_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
     mode,
     folder,
+    folderA: mode === "compare" ? folder : "",
+    folderB: mode === "compare" ? (initialFolderB || folder) : "",
     limit: 2,
     page: 1,
     totalPages: 1,
@@ -219,9 +228,29 @@ function refreshActiveViewUI() {
 function updateViewFolder(viewId, folderName) {
   const view = getViewById(viewId);
   if (!view) return;
-  view.folder = folderName;
+  if (view.mode === "compare") {
+    view.folderA = folderName;
+    view.folder = folderName;
+  } else {
+    view.folder = folderName;
+  }
   view.page = 1;
-  if (view.folder) ensureExpandedForPath(view.folder);
+  const selectedFolder = view.mode === "compare" ? view.folderA : view.folder;
+  if (selectedFolder) ensureExpandedForPath(selectedFolder);
+  renderFolderTree();
+  syncViewControl(viewId);
+  loadViewImages(viewId);
+}
+
+function updateViewCompareFolders(viewId, folderA, folderB) {
+  const view = getViewById(viewId);
+  if (!view || view.mode !== "compare") return;
+  view.folderA = folderA;
+  view.folderB = folderB;
+  view.folder = folderA;
+  view.page = 1;
+  if (view.folderA) ensureExpandedForPath(view.folderA);
+  if (view.folderB) ensureExpandedForPath(view.folderB);
   renderFolderTree();
   syncViewControl(viewId);
   loadViewImages(viewId);
@@ -231,8 +260,14 @@ function updateViewMode(viewId, mode) {
   const view = getViewById(viewId);
   if (!view) return;
   view.mode = mode === "compare" ? "compare" : "single";
-  if (!state.folders.includes(view.folder)) {
-    view.folder = state.folders[0] || "";
+  if (view.mode === "compare") {
+    view.folderA = state.folders.includes(view.folderA) ? view.folderA : view.folder || state.folders[0] || "";
+    view.folderB = state.folders.includes(view.folderB) ? view.folderB : view.folderA || state.folders[0] || "";
+    view.folder = view.folderA;
+  } else {
+    if (!state.folders.includes(view.folder)) {
+      view.folder = state.folders[0] || "";
+    }
   }
   view.page = 1;
   syncViewControl(viewId);
@@ -251,6 +286,8 @@ function syncViewControl(viewId) {
 
   const modeSelect = document.getElementById(`modeSelect_${viewId}`);
   const folderSelect = document.getElementById(`folderSelect_${viewId}`);
+  const folderASelect = document.getElementById(`folderASelect_${viewId}`);
+  const folderBSelect = document.getElementById(`folderBSelect_${viewId}`);
   const countInput = document.getElementById(`countInput_${viewId}`);
   const pageInfo = document.getElementById(`pageInfo_${viewId}`);
   const prevBtn = document.getElementById(`prevPage_${viewId}`);
@@ -258,6 +295,8 @@ function syncViewControl(viewId) {
 
   if (modeSelect) modeSelect.value = view.mode;
   if (folderSelect) folderSelect.value = view.folder;
+  if (folderASelect) folderASelect.value = view.folderA || "";
+  if (folderBSelect) folderBSelect.value = view.folderB || "";
   if (countInput) countInput.value = String(view.limit);
   if (pageInfo) pageInfo.textContent = `第 ${view.page}/${view.totalPages} 页`;
   if (prevBtn) prevBtn.disabled = view.page <= 1;
@@ -273,7 +312,9 @@ function renderFolderTree() {
     return;
   }
 
-  const activeFolder = getViewById(state.activeViewId)?.folder || "";
+  const activeView = getViewById(state.activeViewId);
+  const activeFolder =
+    activeView?.mode === "compare" ? activeView?.folderA || "" : activeView?.folder || "";
   if (activeFolder) ensureExpandedForPath(activeFolder);
 
   const treeRoot = buildTree(state.folders);
@@ -357,6 +398,8 @@ function openPreview(viewId, index, slot = "single") {
   state.preview.viewId = viewId;
   state.preview.mode = currentData.mode || "single";
   state.preview.folder = view.folder;
+  state.preview.folderA = view.folderA || "";
+  state.preview.folderB = view.folderB || "";
   state.preview.page = view.page;
   state.preview.limit = view.limit;
   state.preview.totalPages = view.totalPages;
@@ -369,11 +412,12 @@ function openPreview(viewId, index, slot = "single") {
 }
 
 async function loadPreviewPage(page, keepIndex = 0) {
-  const { folder, limit, mode } = state.preview;
+  const { folder, folderA, folderB, limit, mode } = state.preview;
   if (mode !== "compare" && !folder) return;
+  if (mode === "compare" && (!folderA || !folderB)) return;
   const data =
     mode === "compare"
-      ? await apiGetPairedImages(folder, limit, page)
+      ? await apiGetPairedImages(folderA, folderB, limit, page)
       : await apiGetImages(folder, limit, page);
   state.preview.page = data.page || page;
   state.preview.totalPages = data.total_pages || 1;
@@ -557,19 +601,42 @@ function renderViewCard(view) {
   const folderSelect = document.createElement("select");
   folderSelect.className = "small-select";
   folderSelect.id = `folderSelect_${view.id}`;
-  folderSelect.title = view.mode === "compare" ? "双行对照子目录" : "普通目录";
-  const folderOptions =
-    view.mode === "compare"
-      ? getCompareFolderOptions()
-      : state.folders.map((folder) => ({ value: folder, label: folder }));
-  folderOptions.forEach(({ value, label }) => {
+  folderSelect.title = "普通目录";
+  state.folders.forEach((folder) => {
     const op = document.createElement("option");
-    op.value = value;
-    op.textContent = label;
-    if (value === view.folder) op.selected = true;
+    op.value = folder;
+    op.textContent = folder;
+    if (folder === view.folder) op.selected = true;
     folderSelect.appendChild(op);
   });
   folderSelect.onchange = (e) => updateViewFolder(view.id, e.target.value);
+
+  const folderASelect = document.createElement("select");
+  folderASelect.className = "small-select";
+  folderASelect.id = `folderASelect_${view.id}`;
+  folderASelect.title = "对照目录 A";
+  getCompareFolderOptions().forEach(({ value, label }) => {
+    const op = document.createElement("option");
+    op.value = value;
+    op.textContent = `A: ${label}`;
+    if (value === view.folderA) op.selected = true;
+    folderASelect.appendChild(op);
+  });
+
+  const folderBSelect = document.createElement("select");
+  folderBSelect.className = "small-select";
+  folderBSelect.id = `folderBSelect_${view.id}`;
+  folderBSelect.title = "对照目录 B";
+  getCompareFolderOptions().forEach(({ value, label }) => {
+    const op = document.createElement("option");
+    op.value = value;
+    op.textContent = `B: ${label}`;
+    if (value === view.folderB) op.selected = true;
+    folderBSelect.appendChild(op);
+  });
+
+  folderASelect.onchange = () => updateViewCompareFolders(view.id, folderASelect.value, folderBSelect.value);
+  folderBSelect.onchange = () => updateViewCompareFolders(view.id, folderASelect.value, folderBSelect.value);
 
   const countInput = document.createElement("input");
   countInput.className = "small-input";
@@ -632,7 +699,8 @@ function renderViewCard(view) {
 
   actions.append(
     modeSelect,
-    folderSelect,
+    view.mode === "compare" ? folderASelect : folderSelect,
+    ...(view.mode === "compare" ? [folderBSelect] : []),
     countInput,
     prevPageBtn,
     nextPageBtn,
@@ -669,7 +737,11 @@ function renderViews() {
 async function loadViewImages(viewId) {
   const view = getViewById(viewId);
   if (!view || !state.root) return;
-  if (view.mode !== "compare" && !view.folder) return;
+  if (view.mode === "compare") {
+    if (!view.folderA || !view.folderB) return;
+  } else if (!view.folder) {
+    return;
+  }
 
   view.limit = clampCount(view.limit);
   const grid = document.getElementById(`grid_${viewId}`);
@@ -678,7 +750,7 @@ async function loadViewImages(viewId) {
   try {
     const data =
       view.mode === "compare"
-        ? await apiGetPairedImages(view.folder, view.limit, view.page)
+        ? await apiGetPairedImages(view.folderA, view.folderB, view.limit, view.page)
         : await apiGetImages(view.folder, view.limit, view.page);
     view.page = data.page || 1;
     view.totalPages = data.total_pages || 1;
@@ -691,7 +763,7 @@ async function loadViewImages(viewId) {
     renderImagesToGrid(view.id, data.items || []);
     setStatus(
       view.mode === "compare"
-        ? `对照目录 ${view.folder}：第 ${view.page}/${view.totalPages} 页，共匹配 ${view.total} 组图片。`
+        ? `对照目录 ${view.folderA} vs ${view.folderB}：第 ${view.page}/${view.totalPages} 页，共匹配 ${view.total} 组图片。`
         : `目录 ${view.folder}：第 ${view.page}/${view.totalPages} 页，共 ${view.total} 张图。`
     );
   } catch (err) {
@@ -723,12 +795,26 @@ async function loadFolders() {
       createView(state.folders[0], "single");
     } else {
       state.views.forEach((view) => {
-        if (!state.folders.includes(view.folder)) {
-          view.folder = state.folders[0] || "";
-          view.page = 1;
-        }
-        if (view.folder) {
-          ensureExpandedForPath(view.folder);
+        if (view.mode === "compare") {
+          if (!state.folders.includes(view.folderA)) {
+            view.folderA = state.folders[0] || "";
+            view.page = 1;
+          }
+          if (!state.folders.includes(view.folderB)) {
+            view.folderB = state.folders.find((folder) => folder !== view.folderA) || view.folderA;
+            view.page = 1;
+          }
+          view.folder = view.folderA;
+          if (view.folderA) ensureExpandedForPath(view.folderA);
+          if (view.folderB) ensureExpandedForPath(view.folderB);
+        } else {
+          if (!state.folders.includes(view.folder)) {
+            view.folder = state.folders[0] || "";
+            view.page = 1;
+          }
+          if (view.folder) {
+            ensureExpandedForPath(view.folder);
+          }
         }
       });
       renderFolderTree();
@@ -745,8 +831,6 @@ async function init() {
   try {
     const config = await apiGetConfig();
     state.root = config.default_root || "";
-    state.compareLabels.source = config.paired_source_label || state.compareLabels.source;
-    state.compareLabels.result = config.paired_result_label || state.compareLabels.result;
     if (!state.root) {
       setStatus("后端未配置默认根目录。", true);
       return;
@@ -777,7 +861,9 @@ expandAllBtn.onclick = () => {
 };
 collapseAllBtn.onclick = () => {
   state.expandedPaths.clear();
-  const activeFolder = getViewById(state.activeViewId)?.folder;
+  const activeView = getViewById(state.activeViewId);
+  const activeFolder =
+    activeView?.mode === "compare" ? activeView?.folderA : activeView?.folder;
   if (activeFolder) ensureExpandedForPath(activeFolder);
   renderFolderTree();
 };
