@@ -290,6 +290,7 @@ function syncViewControl(viewId) {
   const folderBSelect = document.getElementById(`folderBSelect_${viewId}`);
   const countInput = document.getElementById(`countInput_${viewId}`);
   const pageInfo = document.getElementById(`pageInfo_${viewId}`);
+  const pageJumpInput = document.getElementById(`pageJumpInput_${viewId}`);
   const prevBtn = document.getElementById(`prevPage_${viewId}`);
   const nextBtn = document.getElementById(`nextPage_${viewId}`);
 
@@ -299,6 +300,7 @@ function syncViewControl(viewId) {
   if (folderBSelect) folderBSelect.value = view.folderB || "";
   if (countInput) countInput.value = String(view.limit);
   if (pageInfo) pageInfo.textContent = `第 ${view.page}/${view.totalPages} 页`;
+  if (pageJumpInput) pageJumpInput.max = String(Math.max(1, view.totalPages));
   if (prevBtn) prevBtn.disabled = view.page <= 1;
   if (nextBtn) nextBtn.disabled = view.page >= view.totalPages;
 }
@@ -680,6 +682,40 @@ function renderViewCard(view) {
   pageInfo.id = `pageInfo_${view.id}`;
   pageInfo.textContent = `第 ${view.page}/${view.totalPages} 页`;
 
+  const pageJumpInput = document.createElement("input");
+  pageJumpInput.className = "small-input";
+  pageJumpInput.id = `pageJumpInput_${view.id}`;
+  pageJumpInput.type = "number";
+  pageJumpInput.min = "1";
+  pageJumpInput.step = "1";
+  pageJumpInput.placeholder = "页码";
+  pageJumpInput.title = "输入页码后跳转";
+  pageJumpInput.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      pageJumpBtn.click();
+    }
+  };
+
+  const pageJumpBtn = document.createElement("button");
+  pageJumpBtn.className = "btn ghost small-btn";
+  pageJumpBtn.textContent = "跳转";
+  pageJumpBtn.onclick = () => {
+    const raw = Number(pageJumpInput.value);
+    if (!Number.isFinite(raw)) {
+      setStatus("请输入有效页码。", true);
+      return;
+    }
+    const target = Math.trunc(raw);
+    if (target < 1 || target > view.totalPages) {
+      setStatus(`页码超出范围，请输入 1 ~ ${view.totalPages}。`, true);
+      return;
+    }
+    if (target === view.page) return;
+    view.page = target;
+    loadViewImages(view.id);
+  };
+
   const activateBtn = document.createElement("button");
   activateBtn.className = "btn ghost small-btn activate-btn";
   activateBtn.dataset.viewId = view.id;
@@ -705,6 +741,8 @@ function renderViewCard(view) {
     prevPageBtn,
     nextPageBtn,
     pageInfo,
+    pageJumpInput,
+    pageJumpBtn,
     activateBtn,
     refreshBtn,
     closeBtn
