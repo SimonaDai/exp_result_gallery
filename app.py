@@ -62,6 +62,33 @@ def _natural_sort_key(value: str) -> list[Any]:
     return [int(part) if part.isdigit() else part for part in parts]
 
 
+def _pair_images(images_a: list[Path], root_a: Path, images_b: list[Path], root_b: Path) -> list[tuple[Path, Path]]:
+    # 1) 优先按相对路径配对；2) 若失败则按同名唯一文件兜底
+    map_b_by_rel = {p.relative_to(root_b).as_posix(): p for p in images_b}
+    map_b_by_name: dict[str, list[Path]] = {}
+    for p in images_b:
+        map_b_by_name.setdefault(p.name, []).append(p)
+
+    used_b: set[Path] = set()
+    pairs: list[tuple[Path, Path]] = []
+
+    for src in images_a:
+        rel = src.relative_to(root_a).as_posix()
+        dst = map_b_by_rel.get(rel)
+        if dst is not None and dst not in used_b:
+            used_b.add(dst)
+            pairs.append((src, dst))
+            continue
+
+        same_name = [p for p in map_b_by_name.get(src.name, []) if p not in used_b]
+        if len(same_name) == 1:
+            dst = same_name[0]
+            used_b.add(dst)
+            pairs.append((src, dst))
+
+    return pairs
+
+
 def _resolve_folder(root: Path, folder_name: str) -> Path | None:
     # 允许 root 内部的软链接目录，但拒绝绝对路径与 .. 路径穿越
     normalized = folder_name.replace("\\", "/").strip("/")
@@ -207,13 +234,7 @@ def get_paired_images() -> Any:
 
     images_a = _list_images(folder_a_path, recursive=True)
     images_b = _list_images(folder_b_path, recursive=True)
-    map_b = {p.relative_to(folder_b_path).as_posix(): p for p in images_b}
-    paired_files = []
-    for src in images_a:
-        rel = src.relative_to(folder_a_path).as_posix()
-        dst = map_b.get(rel)
-        if dst is not None:
-            paired_files.append((src, dst))
+    paired_files = _pair_images(images_a, folder_a_path, images_b, folder_b_path)
 
     total = len(paired_files)
     total_pages = max(1, (total + limit - 1) // limit)
