@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
@@ -62,10 +63,23 @@ def _natural_sort_key(value: str) -> list[Any]:
 
 
 def _resolve_folder(root: Path, folder_name: str) -> Path | None:
-    folder_path = (root / folder_name).resolve()
-    if not _is_subpath(root, folder_path):
+    # 允许 root 内部的软链接目录，但拒绝绝对路径与 .. 路径穿越
+    normalized = folder_name.replace("\\", "/").strip("/")
+    pure = PurePosixPath(normalized)
+    if pure.is_absolute() or ".." in pure.parts:
         return None
+    folder_path = root.joinpath(*pure.parts)
     return folder_path
+
+
+def _resolve_relative_path(root: Path, relative_path: str) -> Path | None:
+    normalized = relative_path.replace("\\", "/").strip("/")
+    pure = PurePosixPath(normalized)
+    if not normalized:
+        return None
+    if pure.is_absolute() or ".." in pure.parts:
+        return None
+    return root.joinpath(*pure.parts)
 
 
 def _build_image_item(root: Path, file_path: Path) -> dict[str, Any]:
@@ -246,8 +260,8 @@ def get_image() -> Any:
     rel_path = (request.args.get("path") or "").strip()
     if not rel_path:
         abort(400)
-    file_path = (root / rel_path).resolve()
-    if not _is_subpath(root, file_path):
+    file_path = _resolve_relative_path(root, rel_path)
+    if file_path is None:
         abort(403)
     if not file_path.exists() or not file_path.is_file():
         abort(404)
